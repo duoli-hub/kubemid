@@ -1,4 +1,4 @@
-## 主要优化点说明
+## 主要说明
 
 ### 1. **支持多服务器不同密码**
 
@@ -31,7 +31,7 @@
 
 ### 场景一：所有主机同一用户名、端口22，密码各不相同
 
-**Inventory 文件 (`hosts.ini`)：**
+**Inventory 文件 (`hosts`)：**
 
 ```ini
 [web]
@@ -42,8 +42,8 @@
 **执行：**
 
 ```bash
-chmod +x ssh-copy-id-batch.sh
-./ssh-copy-id-batch.sh hosts.ini
+chmod +x ssh-copy-id.sh
+./ssh-copy-id.sh hosts
 ```
 
 脚本会自动读取每台主机的密码，无需在命令行暴露。
@@ -51,7 +51,7 @@ chmod +x ssh-copy-id-batch.sh
 ### 场景二：所有主机统一密码，部分主机不同端口
 
 ```bash
-./ssh-copy-id-batch.sh -u root -p "SamePass" hosts.ini
+./ssh-copy-id.sh -u root -p "SamePass" hosts
 ```
 
 Inventory 里可单独覆盖端口：
@@ -75,7 +75,7 @@ host2 ansible_host=10.0.0.2 ansible_password=Secret2
 执行：
 
 ```bash
-./ssh-copy-id-batch.sh hosts.ini
+./ssh-copy-id.sh hosts
 ```
 
 host1 和 host2 的地址、端口、用户、密码全部独立定义，脚本自动适配。
