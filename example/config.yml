@@ -45,3 +45,78 @@ DOCKER_STORAGE_DIR: "/var/lib/docker"
 
 # [docker]开启Restful API
 DOCKER_ENABLE_REMOTE_API: false
+
+
+
+
+
+
+############################
+# role:redis
+############################
+REDIS_VER: "__redis__"
+
+
+
+
+############################
+# role:mysql
+############################
+MYSQL_VER: "__mysql__"
+
+
+
+
+############################
+# role:kafka
+############################
+KAFKA_VER: "__kafka__"
+
+
+
+
+############################
+# role:rocketmq
+############################
+ROCKETMQ_VER: "__rocketmq__"
+
+
+
+
+############################
+# role:rabbitmq
+############################
+RABBITMQ_VER: "__rabbitmq__"
+
+
+
+
+############################
+# role:zookeeper
+############################
+ZOOKEEPER_VER: "__zookeeper__"
+
+
+
+
+
+############################
+# role:nginx
+############################
+NGINX_VER: "__nginx__"
+
+
+
+
+############################
+# role:tomcat
+############################
+TOMCAT_VER: "__tomcat__"
+
+
+
+
+############################
+# role:elasticsearch
+############################
+ELASTICSEARCH_VER: "__elasticsearch__"

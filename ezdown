@@ -16,6 +16,18 @@ DOCKER_VER=28.0.4
 KUBEMID_VER=0.0.1
 REGISTRY_MIRROR=CN
 
+redisVer=8.4.0
+mysqlVer=9.7.0 
+kafkaVer=4.2.0
+rocketmqVer=5.4.0
+rabbitmqVer=4.3.0
+zookeeperVer=3.8.6
+nginxVer=1.30.0
+tomcatVer=10.1.49
+elasticsearchVer=9.3.3
+
+
+
 # images downloaded by default(with 'ezdown -D')
 
 # images not downloaded by default(only download  with 'ezdown -X ***')
@@ -28,7 +40,6 @@ function usage() {
     -D         download default binaries/images into "$BASE"
     -P <OS>    download system packages of the OS (ubuntu_22,debian_11,...)
     -S         start kubemid in a container
-    -X <opt>   download extra images
     -d <ver>   set docker-ce version, default "$DOCKER_VER"
     -m <str>   set docker registry mirrors, default "CN"(used in Mainland,China)
     -z <ver>   set kubemid version, default "$KUBEMID_VER"
@@ -297,7 +308,6 @@ function download_all() {
   download_docker && \
   install_docker && \
   get_kubemid
-  # start_local_registry
 }
 
 function main() {
@@ -316,7 +326,7 @@ function main() {
   [[ "$#" -eq 0 ]] && { usage >&2; exit 1; }
 
   ACTION=""
-  while getopts "CDP:SX:d:m:z:" OPTION; do
+  while getopts "CDP:S:d:m:z:" OPTION; do
       case "$OPTION" in
         C)
           ACTION="clean_container"
@@ -332,9 +342,6 @@ function main() {
           ;;
         S)
           ACTION="start_kubemid_docker"
-          ;;
-        X)
-          ACTION="get_extra_images $OPTARG"
           ;;
         d)
           DOCKER_VER="$OPTARG"
@@ -359,9 +366,5 @@ function main() {
   ${ACTION} || { logger error "Action failed: $ACTION"; return 1; }
   logger info "Action successed: $ACTION"
 }
-
-
-
-
 
 main "$@"
