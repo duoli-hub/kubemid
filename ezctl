@@ -1,0 +1,324 @@
+#!/bin/bash
+#  Create & manage middleware
+#  shellcheck disable=SC2155
+
+set -o nounset
+set -o errexit
+
+
+function usage() {
+    echo -e "\033[33mUsage:\033[0m ezctl COMMAND [args]"
+    cat <<EOF
+-------------------------------------------------------------------------------------
+Middleware setups:
+    list		             to list all of the managed clusters
+    checkout    <cluster>            to switch default kubeconfig of the cluster
+    new         <cluster>            to start a new k8s deploy with name 'cluster'
+    setup       <cluster>  <step>    to setup a cluster, also supporting a step-by-step way
+    start       <cluster>            to start all of the k8s services stopped by 'ezctl stop'
+    stop        <cluster>            to stop all of the k8s services temporarily
+    upgrade     <cluster>            to upgrade the k8s cluster
+    destroy     <cluster>            to destroy the k8s cluster
+    backup      <cluster>            to backup the cluster state (etcd snapshot)
+    restore     <cluster>            to restore the cluster state from backups
+    start-aio		             to quickly setup an all-in-one cluster with default settings
+
+Use "ezctl help <command>" for more information about a given command.
+EOF
+}
+
+function logger() {
+    TIMESTAMP=$(date +'%Y-%m-%d %H:%M:%S')
+    local FNAME=$(basename "${BASH_SOURCE[1]}")
+    local SOURCE="\033[36m[$FNAME:${BASH_LINENO[0]}]\033[0m"
+    case "$1" in
+        debug)
+            echo -e "\033[36m$TIMESTAMP\033[0m $SOURCE \033[36mDEBUG $2\033[0m"
+            ;;
+        info)
+            echo -e "\033[36m$TIMESTAMP\033[0m $SOURCE \033[32mINFO $2\033[0m"
+            ;;
+        warn)
+            echo -e "\033[36m$TIMESTAMP\033[0m $SOURCE \033[33mWARN $2\033[0m"
+            ;;
+        error)
+            echo -e "\033[36m$TIMESTAMP\033[0m $SOURCE \033[31mERROR $2\033[0m"
+            ;;
+        *) ;;
+    esac
+}
+
+
+function usage-setup(){
+  echo -e "\033[33mUsage:\033[0m ezctl setup <cluster> <step>"
+  cat <<EOF
+available steps:
+    01  prepare            to prepare CA/certs & kubeconfig & other system settings
+    02  etcd               to setup the etcd cluster
+    03  container-runtime  to setup the container runtime(docker or containerd)
+    04  kube-master        to setup the master nodes
+    05  kube-node          to setup the worker nodes
+    06  network            to setup the network plugin
+    07  cluster-addon      to setup other useful plugins
+    90  all                to run 01~07 all at once
+    10  ex-lb              to install external loadbalance for accessing k8s from outside
+    11  harbor             to install a new harbor server or to integrate with an existed one
+
+examples: ./ezctl setup test-k8s 01  (or ./ezctl setup test-k8s prepare)
+	      ./ezctl setup test-k8s 02  (or ./ezctl setup test-k8s etcd)
+          ./ezctl setup test-k8s all
+          ./ezctl setup test-k8s 04 -t restart_master
+EOF
+}
+
+### Middleware setups functions ##############################
+
+function new() {
+    # check if already existed
+    [[ -d "clusters/$1" ]] && { logger error "cluster:$1 already existed, if cluster:$1 setup failed, try 'rm -rf $BASE/clusters/$1' first!"; exit 1; }
+
+    logger debug "generate custom cluster files in $BASE/clusters/$1"
+    mkdir -p "clusters/$1"
+    cp example/hosts.multi-node "clusters/$1/hosts"
+    sed -i "s/_cluster_name_/$1/g" "clusters/$1/hosts"
+    cp example/config.yml "clusters/$1/config.yml"
+
+    logger debug "set versions"
+    # these variables were imported with eval and have the same name in ezdown
+    eval $(sed '/V.[rR]=.*\./!d' ezdown)
+    k8sVer=$(echo "$K8S_BIN_VER"|sed 's/v//g')
+    registryMirror=true
+
+    grep registry-mirrors /etc/docker/daemon.json > /dev/null 2>&1 || { logger debug "disable registry mirrors"; registryMirror=false; }
+
+    sed -i -e "s/__k8s_ver__/$k8sVer/g" \
+       -e "s/__flannel__/$flannelVer/g" \
+	   -e "s/__calico__/$calicoVer/g" \
+	   -e "s/__cilium__/$ciliumVer/g" \
+	   -e "s/__kube_ovn__/$kubeOvnVer/g" \
+	   -e "s/__kube_router__/$kubeRouterVer/g" \
+	   -e "s/__coredns__/$corednsVer/g" \
+	   -e "s/__pause__/$pauseVer/g" \
+	   -e "s/__dns_node_cache__/$dnsNodeCacheVer/g" \
+	   -e "s/__dashboard__/$dashboardVer/g" \
+	   -e "s/__local_path_provisioner__/$localpathProvisionerVer/g" \
+	   -e "s/__nfs_provisioner__/$nfsProvisionerVer/g" \
+	   -e "s/__openebs_ver__/$openebsVer/g" \
+	   -e "s/__prom_chart__/$promChartVer/g" \
+	   -e "s/__minio_chart__/$minioOperatorVer/g" \
+	   -e "s/__kubeapps_chart__/$kubeappsVer/g" \
+	   -e "s/__kubeblocks_ver__/$kubeblocksVer/g" \
+	   -e "s/__ingress_nginx_ver__/$ingressNginxVer/g" \
+	   -e "s/__harbor__/$HARBOR_VER/g" \
+	   -e "s/^ENABLE_MIRROR_REGISTRY.*$/ENABLE_MIRROR_REGISTRY: $registryMirror/g" \
+	   -e "s/__metrics__/$metricsVer/g" "clusters/$1/config.yml"
+
+
+    logger debug "cluster $1: files successfully created."
+    logger info "next steps 1: to config '$BASE/clusters/$1/hosts'"
+    logger info "next steps 2: to config '$BASE/clusters/$1/config.yml'"
+}
+
+function setup() {
+    [[ -d "clusters/$1" ]] || { logger error "invalid config, run 'ezctl new $1' first"; return 1; }
+    #[[ -f "bin/kube-apiserver" ]] || { logger error "no binaries founded, run 'ezdown -D' fist"; return 1; }
+
+    # for extending usage
+    EXTRA_ARGS=$(echo "$*"|sed "s/$1 $2//g"|sed "s/^ *//g")
+
+    PLAY_BOOK="dummy.yml"
+    case "$2" in
+      (01|prepare)
+          PLAY_BOOK="01.prepare.yml"
+          ;;
+      (02|etcd)
+          PLAY_BOOK="02.etcd.yml"
+          ;;
+      (03|container-runtime)
+          PLAY_BOOK="03.runtime.yml"
+          ;;
+      (04|kube-master)
+          PLAY_BOOK="04.kube-master.yml"
+          ;;
+      (05|kube-node)
+          PLAY_BOOK="05.kube-node.yml"
+          ;;
+      (06|network)
+          PLAY_BOOK="06.network.yml"
+          ;;
+      (07|cluster-addon)
+          PLAY_BOOK="07.cluster-addon.yml"
+          ;;
+      (90|all)
+          PLAY_BOOK="90.setup.yml"
+          ;;
+      (10|ex-lb)
+          PLAY_BOOK="10.ex-lb.yml"
+          ;;
+      (11|harbor)
+          PLAY_BOOK="11.harbor.yml"
+          ;;
+      (*)
+          usage-setup
+          exit 1
+          ;;
+    esac
+
+    COMMAND="ansible-playbook -i clusters/$1/hosts -e @clusters/$1/config.yml $EXTRA_ARGS playbooks/$PLAY_BOOK"
+    echo "$COMMAND"
+
+    k8s_ver=$(bin/kube-apiserver --version|cut -d' ' -f2)
+    etcd_ver=v$(bin/etcd --version|grep 'etcd Version'|cut -d' ' -f3)
+    network_cni=$(grep CLUSTER_NETWORK "clusters/$1/hosts"|cut -d'"' -f2|sed 's/-//g')
+    network_cni_ver=$(grep -i "${network_cni}Ver" ezdown|cut -d'=' -f2|head -n1)
+
+    cat <<EOF
+*** Component Version *********************
+*******************************************
+*   kubernetes: ${k8s_ver}
+*   etcd: ${etcd_ver}
+*   ${network_cni}: ${network_cni_ver}
+*******************************************
+EOF
+
+    logger info "cluster:$1 setup step:$2 begins in 5s, press any key to abort:\n"
+    ! (read -r -t5 -n1) || { logger warn "setup abort"; return 1; }
+
+    ${COMMAND} || return 1
+}
+
+function cmd() {
+    [[ -d "clusters/$1" ]] || { logger error "invalid config, run 'ezctl new $1' first"; return 1; }
+
+    PLAY_BOOK="dummy.yml"
+    case "$2" in
+      (start)
+          PLAY_BOOK="91.start.yml"
+          ;;
+      (stop)
+          PLAY_BOOK="92.stop.yml"
+          ;;
+      (upgrade)
+          PLAY_BOOK="93.upgrade.yml"
+          ;;
+      (backup)
+          PLAY_BOOK="94.backup.yml"
+          ;;
+      (restore)
+          PLAY_BOOK="95.restore.yml"
+          ;;
+      (destroy)
+          PLAY_BOOK="99.clean.yml"
+          ;;
+      (*)
+          usage
+          exit 1
+          ;;
+    esac
+
+    COMMAND="ansible-playbook -i clusters/$1/hosts -e @clusters/$1/config.yml playbooks/$PLAY_BOOK"
+    echo "$COMMAND"
+
+    logger info "cluster:$1 $2 begins in 5s, press any key to abort:\n"
+    ! (read -r -t5 -n1) || { logger warn "$2 abort"; return 1; }
+
+    ${COMMAND} || return 1
+}
+
+
+function list() {
+    [[ -d ./clusters ]] || { logger error "cluster not found, run 'ezctl new' first"; return 1; }
+    [[ -f ~/.kube/config ]] || { logger error "kubeconfig not found, run 'ezctl setup' first"; return 1; }
+    which md5sum > /dev/null 2>&1 || { logger error "md5sum not found"; return 1; }
+
+    CLUSTERS=$(cd clusters && echo -- *)
+    CFG_MD5=$(sed '/server/d' ~/.kube/config|md5sum|cut -d' ' -f1)
+    cd "$BASE"
+
+    logger info "list of managed clusters:"
+    i=1; for c in $CLUSTERS;
+    do
+        if [[ -f "clusters/$c/kubectl.kubeconfig" ]];then
+            c_md5=$(sed '/server/d' "clusters/$c/kubectl.kubeconfig"|md5sum|cut -d' ' -f1)
+            if [[ "$c_md5" = "$CFG_MD5" ]];then
+                echo -e "==> cluster $i:\t$c (\033[32mcurrent\033[0m)"
+            else
+                echo -e "==> cluster $i:\t$c"
+            fi
+            ((i++))
+        fi
+    done
+}
+
+
+### in-cluster operation functions ##############################
+
+function start-aio(){
+    set +u
+    # Check ENV 'HOST_IP', exists if the CMD 'ezctl' running in a docker container
+    if [[ -z $HOST_IP ]];then
+        # ezctl runs in a host machine, get host's ip
+        HOST_IF=$(ip route|grep default|head -n1|cut -d' ' -f5)
+        HOST_IP=$(ip a|grep "$HOST_IF$"|head -n1|awk '{print $2}'|cut -d'/' -f1)
+    fi
+    set -u
+    logger info "get local host ipadd: $HOST_IP"
+
+    # allow ssh login using key locally
+    if [[ ! -e /root/.ssh/id_rsa ]]; then
+      logger debug "generate ssh key pair"
+      ssh-keygen -t rsa -b 2048 -N '' -f /root/.ssh/id_rsa > /dev/null
+      cat /root/.ssh/id_rsa.pub >> /root/.ssh/authorized_keys
+      ssh-keyscan -t ecdsa -H "$HOST_IP" >> /root/.ssh/known_hosts
+    fi
+
+    new default
+    /bin/cp -f example/hosts.allinone "clusters/default/hosts"
+    sed -i "s/_cluster_name_/default/g" "clusters/default/hosts"
+    sed -i "s/192.168.1.1/$HOST_IP/g" "clusters/default/hosts"
+
+    setup default all
+}
+
+
+
+
+### Main Lines ##################################################
+function main() {
+  BASE="/etc/kubemid"
+  [[ -d "$BASE" ]] || { logger error "invalid dir:$BASE, try: 'ezdown -D'"; exit 1; }
+  cd "$BASE"
+
+  # check bash shell
+  readlink /proc/$$/exe|grep -q "bash" || { logger error "you should use bash shell only"; exit 1; }
+
+  # check 'ansible' executable
+  which ansible > /dev/null 2>&1 || { logger error "need 'ansible', try: 'pip install ansible'"; usage; exit 1; }
+
+  [ "$#" -gt 0 ] || { usage >&2; exit 2; }
+
+  case "$1" in
+      (new)
+          [ "$#" -eq 2 ] || { usage >&2; exit 2; }
+          new "$2"
+          ;;
+      (setup)
+          [ "$#" -ge 3 ] || { usage-setup >&2; exit 2; }
+          setup "${@:2}"
+          ;;
+      (destroy)
+          [ "$#" -eq 2 ] || { usage >&2; exit 2; }
+          cmd "$2" destroy
+          ;;
+      (start-aio)
+          [ "$#" -eq 1 ] || { usage >&2; exit 2; }
+          start-aio
+          ;;
+      (*)
+          usage
+          exit 0
+          ;;
+  esac
+ }
+
+main "$@"

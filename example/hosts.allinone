@@ -1,0 +1,24 @@
+# set unique 'mid_nodename' for each node
+# CAUTION: 'mid_nodename' must consist of lower case alphanumeric characters, '-' or '.',
+# and must start and end with an alphanumeric character
+[nginx]
+192.168.1.1 mid_nodename=''
+
+# [optional] ntp server
+[chrony]
+#192.168.1.1
+
+[all:vars]
+# --------- Main Variables ---------------
+# container-runtime supported: docker, containerd
+CONTAINER_RUNTIME="containerd"
+
+# -------- Additional Variables (don't change the default value right now)---
+# Binaries Directory
+bin_dir="/opt/kube/bin"
+
+# Deploy Directory (kubemid workspace)
+base_dir="/etc/kubemid"
+
+# Default python interpreter
+ansible_python_interpreter=/usr/bin/python3

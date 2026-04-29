@@ -1,0 +1,11 @@
+# download directory
+down/*
+
+# binaries directory
+bin/*
+
+
+#
+*.crt
+*.key
+*.pem

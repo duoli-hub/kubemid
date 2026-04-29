@@ -1,0 +1,47 @@
+############################
+# prepare
+############################
+# 可选离线安装系统软件包 (offline|online)
+INSTALL_SOURCE: "online"
+
+# 可选进行系统安全加固 github.com/dev-sec/ansible-collection-hardening
+# (deprecated) 未更新上游项目，不建议启用
+OS_HARDEN: false
+
+
+# set unique 'mid_nodename' for each node, if not set(default:'') ip add will be used
+# CAUTION: 'mid_nodename' must consist of lower case alphanumeric characters, '-' or '.',
+# and must start and end with an alphanumeric character (e.g. 'example.com'),
+# regex used for validation is '[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*'
+MID_NODENAME: "{%- if mid_nodename != '' -%} \
+                    {{ mid_nodename|replace('_', '-')|lower }} \
+               {%- else -%} \
+                    k8s-{{ inventory_hostname|replace('.', '-') }} \
+               {%- endif -%}"
+
+# use 'MID_NODENAME' to set hostname
+ENABLE_SETTING_HOSTNAME: true
+
+
+
+
+############################
+# role:runtime [containerd,docker]
+############################
+# [.]启用拉取加速镜像仓库
+ENABLE_MIRROR_REGISTRY: true
+
+# [.]添加信任的私有仓库
+# 必须按照如下示例格式，协议头'http://'和'https://'不能省略
+INSECURE_REG:
+  - "http://duoli.io.local:5000"
+  - "https://reg.yourcompany.com"
+
+# [containerd]容器持久化存储目录
+CONTAINERD_STORAGE_DIR: "/var/lib/containerd"
+
+# [docker]容器存储目录
+DOCKER_STORAGE_DIR: "/var/lib/docker"
+
+# [docker]开启Restful API
+DOCKER_ENABLE_REMOTE_API: false

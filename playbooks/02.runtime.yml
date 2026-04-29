@@ -1,0 +1,6 @@
+# to install a container runtime
+- hosts:
+  - docker
+  roles:
+  - { role: docker, when: "CONTAINER_RUNTIME == 'docker'" }
+  - { role: containerd, when: "CONTAINER_RUNTIME == 'containerd'" }

@@ -1,0 +1,364 @@
+#!/bin/bash
+#--------------------------------------------------
+# This script is used for:
+# 1. to download the scripts/binaries/images needed for installing middleware with kubemid
+# @author:   duoli
+# @usage:    ./ezdown
+# @repo:     https://github.com/duoli-hub/kubemid
+#--------------------------------------------------
+# shellcheck disable=SC2155
+set -o nounset
+set -o errexit
+set -o pipefail
+
+# default settings, can be overridden by cmd line options, see usage
+DOCKER_VER=28.0.4
+KUBEMID_VER=0.0.1
+REGISTRY_MIRROR=CN
+
+# images downloaded by default(with 'ezdown -D')
+
+# images not downloaded by default(only download  with 'ezdown -X ***')
+
+function usage() {
+  echo -e "\033[33mUsage:\033[0m ezdown [options] [args]"
+  cat <<EOF
+  option:
+    -C         stop&clean all local containers
+    -D         download default binaries/images into "$BASE"
+    -P <OS>    download system packages of the OS (ubuntu_22,debian_11,...)
+    -X <opt>   download extra images
+    -d <ver>   set docker-ce version, default "$DOCKER_VER"
+    -m <str>   set docker registry mirrors, default "CN"(used in Mainland,China)
+    -z <ver>   set kubemid version, default "$KUBEMID_VER"
+EOF
+}
+
+function logger() {
+  TIMESTAMP=$(date +'%Y-%m-%d %H:%M:%S')
+  local FNAME=$(basename "${BASH_SOURCE[1]}")
+  local SOURCE="\033[36m[$FNAME:${BASH_LINENO[0]}]\033[0m"
+  case "$1" in
+    debug)
+      echo -e "\033[36m$TIMESTAMP\033[0m $SOURCE \033[36mDEBUG $2\033[0m"
+      ;;
+    info)
+      echo -e "\033[36m$TIMESTAMP\033[0m $SOURCE \033[32mINFO $2\033[0m"
+      ;;
+    warn)
+      echo -e "\033[36m$TIMESTAMP\033[0m $SOURCE \033[33mWARN $2\033[0m"
+      ;;
+    error)
+      echo -e "\033[36m$TIMESTAMP\033[0m $SOURCE \033[31mERROR $2\033[0m"
+      ;;
+    *) ;;
+  esac
+}
+
+function download_docker() {
+  if [[ "$REGISTRY_MIRROR" == CN ]];then
+    #DOCKER_URL="https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/static/stable/${ARCH}/docker-${DOCKER_VER}.tgz"
+    DOCKER_URL="https://mirrors.aliyun.com/docker-ce/linux/static/stable/${ARCH}/docker-${DOCKER_VER}.tgz"
+  else
+    DOCKER_URL="https://download.docker.com/linux/static/stable/${ARCH}/docker-${DOCKER_VER}.tgz"
+  fi
+
+  if [[ -f "$BASE/down/docker-${DOCKER_VER}.tgz" ]];then
+    logger warn "docker binaries already existed"
+  else
+    logger info "downloading docker binaries, arch:$ARCH, version:$DOCKER_VER"
+    if [[ -e /usr/bin/wget ]];then
+      wget -c --user-agent="Mozilla" --no-check-certificate "$DOCKER_URL" || { logger error "downloading docker failed"; exit 1; }
+    else
+      curl -k -C- -O --retry 3 "$DOCKER_URL" || { logger error "downloading docker failed"; exit 1; }
+    fi
+    mv -f "./docker-$DOCKER_VER.tgz" "$BASE/down"
+  fi
+
+  tar zxf "$BASE/down/docker-$DOCKER_VER.tgz" -C "$BASE/down" && \
+  mkdir -p "$BASE/bin/docker-bin" && \
+  cp -f "$BASE"/down/docker/* "$BASE/bin/docker-bin" && \
+  mv -f "$BASE"/down/docker/* /opt/kube/bin && \
+  rm -rf "$BASE"/down/docker && \
+  ln -sf /opt/kube/bin/docker /bin/docker
+}
+
+function install_docker() {
+  # check if a container runtime is already installed
+  systemctl status docker|grep Active|grep -q running && { logger warn "docker is already running."; return 0; }
+
+  logger debug "generate docker service file"
+  cat > /etc/systemd/system/docker.service << EOF
+[Unit]
+Description=Docker Application Container Engine
+Documentation=http://docs.docker.io
+[Service]
+Environment="PATH=/opt/kube/bin:/bin:/sbin:/usr/bin:/usr/sbin"
+ExecStart=/opt/kube/bin/dockerd
+ExecStartPost=/sbin/iptables -I FORWARD -s 0.0.0.0/0 -j ACCEPT
+ExecReload=/bin/kill -s HUP \$MAINPID
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=infinity
+LimitNPROC=infinity
+LimitCORE=infinity
+Delegate=yes
+KillMode=process
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  # configuration for dockerd
+  mkdir -p /etc/docker
+  DOCKER_VER_MAIN=$(echo "$DOCKER_VER"|cut -d. -f1)
+  CGROUP_DRIVER="cgroupfs"
+  ((DOCKER_VER_MAIN>=20)) && CGROUP_DRIVER="systemd"
+  logger debug "generate docker config: /etc/docker/daemon.json"
+  if [[ "$REGISTRY_MIRROR" == CN ]];then
+    logger debug "prepare register mirror for $REGISTRY_MIRROR"
+    cat > /etc/docker/daemon.json << EOF
+{
+  "exec-opts": ["native.cgroupdriver=$CGROUP_DRIVER"],
+  "registry-mirrors": [
+    "https://docker.1ms.run",
+    "https://hub1.nat.tf",
+    "https://docker.1panel.live",
+    "https://proxy.1panel.live",
+    "https://hub.rat.dev",
+    "https://docker.amingg.com"
+  ],
+  "insecure-registries": ["http://duoli.io.local:5000"],
+  "max-concurrent-downloads": 10,
+  "log-driver": "json-file",
+  "log-level": "warn",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+    },
+  "data-root": "/var/lib/docker"
+}
+EOF
+  else
+    logger debug "standard config without registry mirrors"
+    cat > /etc/docker/daemon.json << EOF
+{
+  "exec-opts": ["native.cgroupdriver=$CGROUP_DRIVER"],
+  "insecure-registries": ["http://duoli.io.local:5000"],
+  "max-concurrent-downloads": 10,
+  "log-driver": "json-file",
+  "log-level": "warn",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+    },
+  "data-root": "/var/lib/docker"
+}
+EOF
+  fi
+
+  if [[ -f /etc/selinux/config ]]; then
+    logger debug "turn off selinux"
+    getenforce|grep Disabled || setenforce 0
+    sed -i 's/^SELINUX=.*$/SELINUX=disabled/g' /etc/selinux/config
+  fi
+
+  logger debug "enable and start docker"
+  systemctl enable docker
+  systemctl daemon-reload && systemctl restart docker && sleep 3
+}
+
+function get_kubemid() {
+  # check if kubemid already existed
+  [[ -d "$BASE/roles/kube-node" ]] && { logger warn "kubeasz already existed"; return 0; }
+
+  if [[ ! -f "$imageDir/kubemid_$KUBEMID_VER.tar" ]];then
+    logger info "downloading kubemid: $KUBEMID_VER"
+    docker pull "easzlab/kubeasz:$KUBEMID_VER" && \
+    docker save -o "$imageDir/kubemid_$KUBEMID_VER.tar" "easzlab/kubeasz:$KUBEMID_VER" || \
+    { logger error "download failed!"; return 1; }
+  else
+    docker load -i "$imageDir/kubemid_$KUBEMID_VER.tar"
+  fi
+
+  docker ps -a |grep -q temp_easz && { logger debug "remove existing container"; docker rm -f temp_easz; }
+  logger debug " run a temporary container"
+  docker run -d --name temp_easz easzlab/kubeasz:${KUBEMID_VER} || { logger error "failed."; exit 1; }
+
+  [[ -d "$BASE/down" ]] && /bin/mv -f "$BASE/down" /tmp
+  [[ -d "$BASE/bin" ]] && /bin/mv -f "$BASE/bin" /tmp
+
+  rm -rf "$BASE" && \
+  logger debug "cp kubemid code from the temporary container" && \
+  docker cp "temp_easz:$BASE" "$BASE" && \
+  logger debug "stop&remove temporary container" && \
+  docker rm -f temp_easz
+
+  mkdir -p "$BASE/bin" "$BASE/down"
+  [[ -d "/tmp/down" ]] && /bin/mv -f /tmp/down/* "$BASE/down"
+  [[ -d "/tmp/bin" ]] && /bin/mv -f /tmp/bin/* "$BASE/bin"
+  return 0
+}
+
+function start_local_registry() {
+  docker ps -a --format="{{ .Names }}"|grep local_registry > /dev/null 2>&1 && \
+  { logger warn "local_registry is already running"; return 0; }
+
+  if [[ ! -f "$imageDir/registry-2.tar" ]];then
+    docker pull "registry:2" && \
+    docker save -o "$imageDir/registry-2.tar" "registry:2"
+  fi
+
+  logger info "start local registry ..."
+  docker load -i "$imageDir/registry-2.tar" > /dev/null
+  mkdir -p /opt/kube/registry
+  docker run -d \
+        --name local_registry \
+        --network host \
+        --restart always \
+        --volume /opt/kube/registry:/var/lib/registry \
+        registry:2
+
+  sed -i "/duoli.io.local/d" /etc/hosts
+  echo "127.0.0.1  duoli.io.local" >> /etc/hosts
+}
+
+function start_kubemid_docker() {
+  # create cmd alias in /root/.bashrc
+  sed -i '/docker exec/d' /root/.bashrc
+  echo "alias dk='docker exec -it kubemid'  # generated by kubemid" >> /root/.bashrc
+
+  [[ -d "$BASE/roles/kube-node" ]] || { logger error "not initialized. try 'ezdown -D' first."; exit 1; }
+  docker ps -a --format="{{ .Names }}"|grep kubemid > /dev/null 2>&1 && \
+  docker rm -f kubemid > /dev/null
+
+  if [[ ! -f "$imageDir/kubemid_$KUBEMID_VER.tar" ]];then
+    logger info "downloading kubemid: $KUBEMID_VER"
+    docker pull "easzlab/kubemid:$KUBEMID_VER" && \
+    docker save -o "$imageDir/kubemid_$KUBEMID_VER.tar" "easzlab/kubemid:$KUBEMID_VER"
+  else
+    docker load -i "$imageDir/kubemid_$KUBEMID_VER.tar"
+  fi
+
+  logger info "try to run kubemid in a container"
+  # get host's IP
+  host_if=$(ip route|grep default|head -n1|cut -d' ' -f5)
+  host_ip=$(ip a|grep "$host_if$"|head -n1|awk '{print $2}'|cut -d'/' -f1)
+  logger debug "get host IP: $host_ip"
+
+  # allow ssh login using key locally
+  if [[ ! -e /root/.ssh/id_rsa ]]; then
+    logger debug "generate ssh key pair"
+    ssh-keygen -t rsa -b 2048 -N '' -f /root/.ssh/id_rsa > /dev/null
+    cat /root/.ssh/id_rsa.pub >> /root/.ssh/authorized_keys
+    ssh-keyscan -t ecdsa -H "$host_ip" >> /root/.ssh/known_hosts
+  fi
+
+  # run kubemid docker container
+  docker run --detach \
+      --env HOST_IP="$host_ip" \
+      --name kubemid \
+      --network host \
+      --restart always \
+      --volume "$BASE":"$BASE" \
+      --volume /root/.kube:/root/.kube \
+      --volume /root/.ssh:/root/.ssh \
+      --volume /etc/docker:/etc/docker \
+      easzlab/kubemid:${KUBEMID_VER}
+}
+
+function clean_container() {
+ logger info "clean all running containers"
+ docker ps -a|awk 'NR>1{print $1}'|xargs docker rm -f
+}
+
+function down_and_save_images(){
+  NS="duoli"
+  [ "$#" -eq 1 ] && NS="$1"
+  for item in "${IMAGES[@]}"; do
+    image_part="${item##*/}"
+    image_name="${image_part%:*}"
+    image_tag="${image_part##*:}"
+    image_file="$imageDir/${image_name}_${image_tag}.tar"
+    if [[ ! -f "$image_file" ]];then
+      docker pull "$item" && \
+      docker save -o "$image_file" "$item" || \
+      { logger error "download $item failed!"; return 1; }
+    else
+      docker load -i "$image_file"
+    fi
+    docker tag "$item" "duoli.io.local:5000/${NS}/${image_part}"
+    docker push "duoli.io.local:5000/${NS}/${image_part}" || \
+    { logger error "push duoli.io.local:5000/${NS}/${image_part} failed!"; return 1; }
+  done
+}
+
+function download_all() {
+  mkdir -p /opt/kube/bin "$BASE/down" "$BASE/bin"
+  download_docker && \
+  install_docker && \
+  get_kubemid && \
+  start_local_registry
+}
+
+function main() {
+  BASE="/etc/kubemid"
+  IMAGES=()
+  imageDir="$BASE/down"
+
+  # check if use bash shell
+  readlink /proc/$$/exe|grep -q "bash" || { logger error "you should use bash shell, not sh"; exit 1; }
+  # check if use with root
+  [[ "$EUID" -ne 0 ]] && { logger error "you should run this script as root"; exit 1; }
+
+  # get architecture
+  ARCH=$(uname -m)
+
+  [[ "$#" -eq 0 ]] && { usage >&2; exit 1; }
+
+  ACTION=""
+  while getopts "CDP:X:d:m:z:" OPTION; do
+      case "$OPTION" in
+        C)
+          ACTION="clean_container"
+          ;;
+        D)
+          ACTION="download_all"
+          ;;
+        P)
+          [[ $OPTARG =~ (ubuntu_[0-9]+|centos_[0-9]+|debian_[0-9]+|fedora_[0-9]+|almalinux_[0-9]+|opensuse_leap_[0-9]+|rocky_[0-9]+) ]] || \
+          { usage-down-sys-pkg; exit 1; }
+          SYS_PKG_VER="${SYS_PKG_VER}_$OPTARG"
+          ACTION="get_sys_pkg $OPTARG"
+          ;;
+        X)
+          ACTION="get_extra_images $OPTARG"
+          ;;
+        d)
+          DOCKER_VER="$OPTARG"
+          ;;
+        m)
+          REGISTRY_MIRROR="$OPTARG"
+          ;;
+        z)
+          KUBEMID_VER="$OPTARG"
+          ;;
+        ?)
+          usage
+          exit 1
+          ;;
+      esac
+  done
+
+  [[ "$ACTION" == "" ]] && { logger error "illegal option"; usage; exit 1; }
+
+  # excute cmd "$ACTION"
+  logger info "Action begin: $ACTION"
+  ${ACTION} || { logger error "Action failed: $ACTION"; return 1; }
+  logger info "Action successed: $ACTION"
+}
+
+
+
+
+
+main "$@"
