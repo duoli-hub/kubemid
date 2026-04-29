@@ -1,7 +1,7 @@
 # set unique 'mid_nodename' for each node
 # CAUTION: 'mid_nodename' must consist of lower case alphanumeric characters, '-' or '.',
 # and must start and end with an alphanumeric character
-[nginx]
+[docker]
 192.168.1.1 mid_nodename=''
 
 # [optional] ntp server
