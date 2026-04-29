@@ -296,7 +296,7 @@ function download_all() {
   mkdir -p /opt/kube/bin "$BASE/down" "$BASE/bin"
   download_docker && \
   install_docker && \
-  get_kubemid && \
+  get_kubemid
   # start_local_registry
 }
 
